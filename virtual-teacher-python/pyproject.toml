@@ -1,0 +1,38 @@
+[project]
+name = "pipo"
+version = "0.1.0"
+description = "virtual-teacher as one Python process: window, microphone, Whisper, qwen2.5 and Kokoro together"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+  "PySide6>=6.8",
+  "sounddevice>=0.5",
+  "numpy>=1.26",
+  "faster-whisper>=1.1",
+  "kokoro-onnx>=0.4",
+  "llama-cpp-python==0.3.19",
+  # CUDA runtime as wheels, so nothing needs a system CUDA install (or sudo).
+  "nvidia-cuda-runtime-cu12",
+  "nvidia-cublas-cu12",
+  "nvidia-cudnn-cu12>=9,<10",
+  "livekit>=1.1.20",
+]
+
+[dependency-groups]
+dev = ["pytest>=8", "pytest-xdist>=3.6", "soundfile>=0.12"]
+
+[tool.uv]
+package = false
+
+# Prebuilt CUDA 12.4 wheels; building llama.cpp with CUDA would need nvcc.
+[[tool.uv.index]]
+name = "llama-cpp-cu124"
+url = "https://abetlen.github.io/llama-cpp-python/whl/cu124"
+explicit = true
+
+[tool.uv.sources]
+llama-cpp-python = { index = "llama-cpp-cu124" }
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "-n 4"
