@@ -2,6 +2,7 @@
 
 Pure: frames in, events out. The microphone gives 16 kHz mono float32 frames, which is also what Whisper takes,
 so the utterance goes to Whisper as it is, with no WAV in between."""
+import collections
 from dataclasses import dataclass
 
 import numpy as np
@@ -16,6 +17,13 @@ PREROLL_FRAMES = 8  # keep the start of the first word
 CALIBRATION_FRAMES = 12  # ~0.5 s to learn how loud the room is
 #: While Pipo speaks, his own voice leaks into the microphone; the child must be this much louder to interrupt.
 SPEAKING_FACTOR = 2.5
+#: How much of the recent room sound is remembered (~3 s): music, a kid singing across the room, the TV.
+ROOM_FRAMES = 75
+#: The room level only counts once this much of it was heard (~1 s).
+ROOM_MIN_FRAMES = 25
+#: While Pipo speaks, an interruption must be this much louder than the room's recent level. A child at the
+#: laptop is much louder at the microphone than one singing along to music across the room.
+ROOM_FACTOR = 2.5
 
 
 @dataclass
@@ -30,9 +38,15 @@ class Ended:
 
 
 class SpeechDetector:
-    def __init__(self, end_silence_ms: float = END_SILENCE_MS, speaking_factor: float = SPEAKING_FACTOR) -> None:
+    def __init__(self, end_silence_ms: float = END_SILENCE_MS, speaking_factor: float = SPEAKING_FACTOR,
+                 room_factor: float = ROOM_FACTOR) -> None:
         self.end_silence_ms = end_silence_ms
         self.speaking_factor = speaking_factor
+        self.room_factor = room_factor
+        self._room: collections.deque[float] = collections.deque(maxlen=ROOM_FRAMES)
+        self._recording_threshold = 0.0
+        #: Loudness of the last frame, for the log.
+        self.level = 0.0
         self.frame_ms = FRAME / RATE * 1000
         self.floor = 0.0
         self._calibration: list[float] = []
@@ -57,17 +71,31 @@ class SpeechDetector:
         self._chunks = []
         self._preroll = []
 
+    def room(self) -> float:
+        """The room's typical level over the last ~3 s (0 until ~1 s was heard)."""
+        return float(np.median(self._room)) if len(self._room) >= ROOM_MIN_FRAMES else 0.0
+
     def threshold(self, pipo_speaking: bool) -> float:
-        return max(self.floor * 3.5, 0.012) * (self.speaking_factor if pipo_speaking else 1)
+        base = max(self.floor * 3.5, 0.012)
+        if not pipo_speaking:
+            return base
+        return max(base * self.speaking_factor, self.room() * self.room_factor)
 
     def feed(self, frame: np.ndarray, pipo_speaking: bool = False) -> Started | Ended | None:
         rms = float(np.sqrt(np.mean(np.square(frame, dtype=np.float64)))) if len(frame) else 0.0
+        self.level = rms
 
         if len(self._calibration) < CALIBRATION_FRAMES:
             self._calibration.append(rms)
             self.floor = sum(self._calibration) / len(self._calibration)
             return None
+        # The room is everything heard while Pipo talks (music that never stops must raise the bar even though
+        # it looked like speech at first) plus the quiet between turns, but never the child's own turn: right
+        # after she spoke, her voice must not become the bar she has to beat. The end of an utterance uses the
+        # bar from when it started.
         threshold = self.threshold(pipo_speaking)
+        if pipo_speaking or not self.recording:
+            self._room.append(rms)
 
         if not self.recording:
             self._preroll.append(frame)
@@ -81,11 +109,12 @@ class SpeechDetector:
                 self.recording = True
                 self._chunks = list(self._preroll)
                 self._voiced_ms = self._quiet_ms = 0.0
+                self._recording_threshold = threshold
                 return Started()
             return None
 
         self._chunks.append(frame)
-        if rms > threshold * 0.6:
+        if rms > self._recording_threshold * 0.6:
             self._voiced_ms += self.frame_ms
             self._quiet_ms = 0.0
         else:

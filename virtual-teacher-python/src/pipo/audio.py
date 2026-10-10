@@ -19,12 +19,16 @@ PLAYED_MAX = RATE  # 1 s
 
 class Speaker:
     """Plays clips one after another. `play` returns at once (Kokoro keeps making the next sentence while this
-    one plays); `stop` drops everything for a barge-in; `duck` softens him while an interruption is checked.
+    one plays); `stop` drops everything for a barge-in and returns what was not finished (the cut sentence
+    first, whole) so it can be said again; `duck` softens him while an interruption is checked.
+    `heard_texts` is what actually reached the child, so the transcript never claims more than she heard.
     `level` is how loud the voice is right now, for Pipo's mouth. Everything played (silence included) is kept
     at 16 kHz for the echo canceller."""
 
     def __init__(self) -> None:
-        self._clips: collections.deque[np.ndarray] = collections.deque()
+        #: [whole clip, samples already played, its text]
+        self._clips: collections.deque[list] = collections.deque()
+        self._heard: list[str] = []
         self._lock = threading.Lock()
         self._idle = threading.Event()
         self._idle.set()
@@ -37,17 +41,26 @@ class Speaker:
                                        callback=self._fill)
         self._stream.start()
 
-    def play(self, clip: np.ndarray) -> None:
+    def play(self, clip: np.ndarray, text: str = "") -> None:
         with self._lock:
-            self._clips.append(clip)
+            self._clips.append([clip, 0, text])
             self._idle.clear()
 
-    def stop(self) -> None:
+    def stop(self) -> list[tuple[np.ndarray, str]]:
         with self._lock:
+            unfinished = [(clip, text) for clip, _, text in self._clips]
             self._clips.clear()
             self._idle.set()
         self._target_volume = 1.0
         self.level = 0.0
+        return unfinished
+
+    def heard_texts(self) -> list[str]:
+        """Texts of the clips that started playing since the last call (the one cut mid-way included; the
+        ones still waiting in the queue are not: the child never heard them)."""
+        with self._lock:
+            done, self._heard = self._heard, []
+        return [t for t in done if t]
 
     def duck(self, on: bool) -> None:
         self._target_volume = DUCKED if on else 1.0
@@ -78,14 +91,16 @@ class Speaker:
         written = 0
         with self._lock:
             while written < frames and self._clips:
-                clip = self._clips[0]
-                n = min(frames - written, len(clip))
-                buf[written:written + n] = clip[:n]
+                item = self._clips[0]
+                clip, pos = item[0], item[1]
+                if pos == 0:
+                    self._heard.append(item[2])
+                n = min(frames - written, len(clip) - pos)
+                buf[written:written + n] = clip[pos:pos + n]
                 written += n
-                if n == len(clip):
+                item[1] = pos + n
+                if item[1] >= len(clip):
                     self._clips.popleft()
-                else:
-                    self._clips[0] = clip[n:]
             if not self._clips:
                 self._idle.set()
         # Glide to the target volume over the block, so ducking doesn't click.

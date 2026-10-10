@@ -3,7 +3,7 @@ off after a sentence. These run the real WebRTC echo canceller on the real recor
 back through the laptop microphone (tests/fixtures/echo-*.npy, 16 kHz)."""
 import numpy as np
 
-from pipo.echo import EchoCanceller, condition, is_own_echo
+from pipo.echo import EchoCanceller, condition, is_interruption, is_own_echo
 
 from .conftest import FIXTURES
 
@@ -35,3 +35,18 @@ def test_his_own_words_heard_back_are_an_echo_and_other_words_are_the_child():
     assert is_own_echo("", said)  # nothing at all: noise
     assert not is_own_echo("Pipo, para, eu quero brincar de outra coisa", said)
     assert not is_own_echo("eu já sei", said)
+
+
+def test_only_someone_talking_to_pipo_interrupts_him():
+    said = "Oi, Theo! Hoje vamos falar sobre planetas. O Pipo adora Júpiter."
+    assert is_interruption("Pipo, eu já sei", said)
+    assert is_interruption("Para!", said)
+    assert is_interruption("Espera, eu quero contar uma coisa", said)
+    assert is_interruption("eu quero brincar de outra coisa", said)
+    # Not him: nothing, Whisper's inventions on noise, his own words, one sung word, a stop word mid-lyric.
+    assert not is_interruption("", said)
+    assert not is_interruption("Obrigado.", said)
+    assert not is_interruption("Legendas pela comunidade Amara.org", said)
+    assert not is_interruption("falar sobre planetas", said)
+    assert not is_interruption("cantando", said)
+    assert not is_interruption("o Pipo adora", said)  # his own "Pipo" coming back is not a call

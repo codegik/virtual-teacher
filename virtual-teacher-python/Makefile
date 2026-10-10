@@ -6,7 +6,7 @@ NV := $(CURDIR)/.venv/lib/python3.12/site-packages/nvidia
 export PYTHONPATH := $(CURDIR)/src
 export LD_LIBRARY_PATH := $(NV)/cuda_runtime/lib:$(NV)/cublas/lib:$(NV)/cudnn/lib:$(LD_LIBRARY_PATH)
 
-.PHONY: help setup doctor run test bench
+.PHONY: help setup doctor run test bench probe
 
 help:
 	@echo "make setup   install Python packages and download the models. Safe to re-run"
@@ -14,6 +14,7 @@ help:
 	@echo "make run     open Pipo (one process: window, microphone, Whisper, qwen2.5, Kokoro)"
 	@echo "make test    full test suite"
 	@echo "make bench   time a real turn with the real models (time to first audio)"
+	@echo "make probe   measure the room (music, singing) vs someone talking to Pipo, for the barge-in bar"
 
 setup:
 	@scripts/setup.sh
@@ -29,3 +30,6 @@ test: doctor
 
 bench: doctor
 	.venv/bin/python -m pipo.bench
+
+probe: doctor
+	.venv/bin/python -m pipo.probe

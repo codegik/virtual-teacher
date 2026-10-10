@@ -148,7 +148,10 @@ class Bridge(QObject):
 
 
 def main() -> int:
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    config.DATA_DIR.mkdir(parents=True, exist_ok=True)
+    # Also to a file: when he stops mid-sentence, the log says what the microphone heard and why.
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+                        handlers=[logging.StreamHandler(), logging.FileHandler(config.DATA_DIR / "pipo.log")])
     app = QGuiApplication(sys.argv)
     app.setApplicationName("Pipo")
     store = Store(config.DATA_DIR / "pipo.db")

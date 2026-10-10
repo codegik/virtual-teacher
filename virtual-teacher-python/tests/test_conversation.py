@@ -21,28 +21,58 @@ def loud(level=0.2):
 
 
 class SlowOutput(FakeOutput):
-    """Plays like a speaker: 'playing' until stop() or until `seconds` pass."""
+    """Plays like a speaker: each clip takes `seconds`, one after another, until stop() drops the rest
+    (and returns them, the one playing first)."""
 
     def __init__(self, seconds=5.0):
         super().__init__()
         self.seconds = seconds
-        self._until = 0.0
+        self._queue: list[tuple[np.ndarray, str]] = []
+        self._started_at = 0.0
+        self._lock = threading.Lock()
 
-    def play(self, clip):
-        super().play(clip)
-        self._until = time.time() + self.seconds
+    def _advance(self):
+        # Clips whose time is up are done; the head one has been heard as soon as it started.
+        now = time.time()
+        while self._queue and now - self._started_at >= self.seconds:
+            self._queue.pop(0)
+            self._started_at += self.seconds
+            if self._queue:
+                self._heard.append(self._queue[0][1])
+
+    def play(self, clip, text=""):
+        with self._lock:
+            self._advance()
+            self.clips.append(clip)
+            self.texts.append(text)
+            if not self._queue:
+                self._started_at = time.time()
+                self._heard.append(text)
+            self._queue.append((clip, text))
+        if self.on_play:
+            self.on_play(len(self.clips))
 
     def stop(self):
-        super().stop()
-        self._until = 0.0
+        with self._lock:
+            self.stops += 1
+            self._advance()
+            cut, self._queue = self._queue, []
+            return cut
+
+    def heard_texts(self):
+        with self._lock:
+            self._advance()
+            return super().heard_texts()
 
     def wait(self, cancel):
-        while time.time() < self._until and not cancel.is_set():
+        while self.playing and not cancel.is_set():
             time.sleep(0.01)
 
     @property
     def playing(self):
-        return time.time() < self._until
+        with self._lock:
+            self._advance()
+            return bool(self._queue)
 
 
 def wait_for(cond, timeout=5.0):
@@ -145,7 +175,7 @@ def test_a_loud_echo_of_his_own_words_does_not_stop_him(store, models):
 
 def test_the_child_talking_over_pipo_stops_him_and_her_sentence_is_the_next_turn(store, models):
     phases: list[str] = []
-    out = SlowOutput()
+    out = SlowOutput(seconds=1.0)
     conv = start_speaking(store, models, out, phases)
     models.hear_next.append("Pipo, eu já sei")  # the confirmation
     models.hear_next.append("Pipo, eu já sei tudo sobre Júpiter!")  # her whole sentence, as the turn
@@ -179,6 +209,64 @@ def test_a_short_word_from_the_child_while_pipo_talks_is_answered(store, models)
     assert wait_for(lambda: any(r == "crianca" for r, _ in store.lines(conv.session_id)))
     conv.close()
     assert ("crianca", HEARD) in store.lines(conv.session_id)
+
+
+def test_a_kid_singing_along_to_music_across_the_room_does_not_stop_him(store, models):
+    # The bug: music playing and a kid singing away from the laptop; Whisper heard a sung word that is not his,
+    # he stopped mid-sentence, the turn heard nothing, and he never finished.
+    out = SlowOutput()
+    conv = start_speaking(store, models, out, [])
+    models.hear_next.append("cantando")  # what Whisper makes of a sung word or two
+    for _ in range(24):
+        conv.feed(loud(0.3))
+        if wait_for(lambda: conv.interruptions_ignored == 1, timeout=0.05):
+            break
+    for _ in range(10):
+        conv.feed(QUIET)
+    assert conv.interruptions_ignored == 1
+    assert out.stops == 0 and out.ducks == [True, False]
+    assert conv.phase == "speaking"
+    conv.close()
+
+
+def test_music_in_the_room_raises_the_bar_and_a_child_at_the_laptop_still_gets_through(store, models):
+    out = SlowOutput()
+    conv = start_speaking(store, models, out, [])
+    models.heard = "música"
+    music = loud(0.15)
+    for _ in range(75):  # 3 s of music while he talks: it looked like speech at first, then became the room
+        conv.feed(music)
+        wait_for(lambda: conv._barge is None, timeout=0.02)
+    out.ducks.clear()
+    for _ in range(25):  # the music goes on: no more checks, he is not even softened
+        conv.feed(music)
+    assert out.ducks == [] and conv.detector.threshold(True) > 0.15
+    models.hear_next.append("Pipo, olha o meu desenho")
+    for _ in range(25):  # the child at the laptop is much louder than the music
+        conv.feed(loud(0.6))
+    assert wait_for(lambda: out.stops >= 1)
+    conv.close()
+
+
+def test_when_he_stops_and_nobody_said_anything_he_says_the_cut_sentence_again(store, models):
+    out = SlowOutput(seconds=0.5)
+    conv = start_speaking(store, models, out, [])
+    assert wait_for(lambda: len(out.clips) == 2)  # the whole answer is queued, as Kokoro does within ~2 s
+    models.hear_next.append("eu quero brincar")  # the confirmation looked like a child...
+    models.hear_next.append("")  # ...but her "whole sentence" is nothing
+    for _ in range(25):
+        conv.feed(loud(0.3))
+    assert wait_for(lambda: out.stops >= 1)
+    for _ in range(10):
+        conv.feed(QUIET)
+    assert wait_for(lambda: conv.resumed == 1 and conv.phase == "idle")
+    conv.close()
+    assert out.texts[-2:] == ["Oi, Theo! Hoje vamos falar sobre planetas.", "Sabia que Júpiter é enorme?"]
+    assert store.lines(conv.session_id) == [
+        ("assistente", "Oi, Theo! Hoje vamos falar sobre planetas."),
+        ("assistente", "Oi, Theo! Hoje vamos falar sobre planetas. Sabia que Júpiter é enorme?"),
+    ]
+    assert len(models.chats) == 1  # nothing new for the model to answer
 
 
 def test_the_echo_tail_right_after_he_finishes_is_not_answered(store, models):

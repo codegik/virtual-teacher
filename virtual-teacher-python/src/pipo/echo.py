@@ -66,3 +66,32 @@ def is_own_echo(heard: str, pipo_said: str) -> bool:
     if not said:
         return False
     return sum(w in said for w in heard_words) / len(heard_words) >= 0.6
+
+
+#: Short words a child says TO Pipo to stop him. One is enough when it OPENS what was heard ("Para!",
+#: "Pipo, ..."); inside a phrase they are just words ("vou para casa", lyrics with "não").
+STOP_WORDS = frozenset({"pipo", "para", "pare", "espera", "espere", "perai", "pera", "nao", "ei"})
+#: What Whisper writes on music, noise or silence (it was trained on subtitled videos). Never an interruption.
+_HALLUCINATIONS = (
+    "obrigado", "obrigada", "obrigado por assistir", "legendas pela comunidade amara org", "legenda adriana zanotto",
+    "tchau", "musica", "aplausos", "risos", "e ai", "inscreva se", "ate a proxima",
+)
+_HALLUCINATIONS_W = frozenset(" ".join(_words(h)) for h in _HALLUCINATIONS)
+
+
+def is_interruption(heard: str, pipo_said: str) -> bool:
+    """True when what the microphone caught while Pipo talks is someone talking TO him: a word to stop him
+    ("Pipo", "para", "espera"), or at least two words that are not his own. A child singing along to music
+    across the room, a murmur, or what Whisper invents on noise ("Obrigado.") are not.
+
+    Whisper's guesses on far-away singing are usually a word or two; a child at the laptop saying something
+    to him gives a real phrase. Two words is the line between them."""
+    words = _words(heard)
+    if not words or " ".join(words) in _HALLUCINATIONS_W:
+        return False
+    said = set(_words(pipo_said))
+    if words[0] in STOP_WORDS and words[0] not in said:  # his own "Pipo" in the echo is not a call
+        return True
+    if is_own_echo(heard, pipo_said):
+        return False
+    return sum(w not in said for w in words) >= 2

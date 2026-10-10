@@ -69,11 +69,14 @@ def run_turn(
     audio: np.ndarray | None = None,
     greet: bool = False,
     is_echo: Callable[[str], bool] | None = None,
+    heard_to_end: Callable[[list[str]], list[str]] | None = None,
 ) -> TurnResult:
     """Runs one turn to the end, or until `cancel` is set (the child talked over Pipo).
 
     `play` receives each sentence's audio and text, in order, as soon as it is spoken. The transcript gets the child's
-    line and what Pipo actually said (sentences already sent to the speaker), never what was cut off."""
+    line and what Pipo actually said, never what never reached the child: `heard_to_end` waits for the speaker and
+    returns the sentences of the answer that were played (the one cut mid-way included, the queued ones not;
+    without it, every sentence sent to `play`). `TurnResult.said` stays everything that was sent."""
     heard = models.transcribe(audio).strip() if audio is not None else ""
     if not heard and not greet:
         return TurnResult(heard="")
@@ -126,8 +129,9 @@ def run_turn(
         sentences.put(None)
         speaker.join()
 
-    if said:
-        store.add_line(session_id, f"{turn_id}_out", "assistente", " ".join(said), now())
+    heard_said = heard_to_end(said) if heard_to_end else said
+    if heard_said:
+        store.add_line(session_id, f"{turn_id}_out", "assistente", " ".join(heard_said), now())
     if errors:
         raise errors[0]
     return TurnResult(heard=heard, said=said, cancelled=cancel.is_set())

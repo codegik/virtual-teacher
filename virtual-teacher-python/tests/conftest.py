@@ -71,25 +71,36 @@ class FakeModels:
 
 
 class FakeOutput:
+    """Plays instantly: every clip is heard the moment it is played, so stop() has nothing left to cut."""
+
     def __init__(self) -> None:
         self.clips: list[np.ndarray] = []
+        self.texts: list[str] = []
         self.stops = 0
         self.ducks: list[bool] = []
         self.on_play: Callable[[int], None] | None = None
+        self._heard: list[str] = []
 
-    def play(self, clip):
+    def play(self, clip, text=""):
         self.clips.append(clip)
+        self.texts.append(text)
+        self._heard.append(text)
         if self.on_play:
             self.on_play(len(self.clips))
 
     def stop(self):
         self.stops += 1
+        return []
 
     def duck(self, on: bool):
         self.ducks.append(on)
 
     def wait(self, cancel: threading.Event):
         return
+
+    def heard_texts(self):
+        done, self._heard = [t for t in self._heard if t], []
+        return done
 
     @property
     def playing(self) -> bool:
